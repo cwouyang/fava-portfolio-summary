@@ -11,23 +11,19 @@ https://github.com/hoostus/portfolio-returns
 
 This is a simple example of Fava's extension reports system.
 """
-from datetime import datetime, timedelta
-import json
 
 import re
 import time
-from collections.abc import Iterable
-from xmlrpc.client import DateTime
 
+import importlib_metadata
 from beancount.core.number import Decimal
 from beancount.core.number import ZERO
-from beancount.core.data import Transaction
-
+from fava.context import g
+from fava.core.conversion import cost_or_value
 from fava.ext import FavaExtensionBase
 from fava.helpers import FavaAPIException
-from fava.core.conversion import cost_or_value
-from fava.core.query_shell import QueryShell
-from fava.context import g
+from packaging.version import parse
+
 from .irr import IRR
 
 
@@ -45,15 +41,29 @@ class PortfolioSummary(FavaExtensionBase):  # pragma: no cover
     def portfolio_accounts(self):
         """An account tree based on matching regex patterns."""
         if self.ledger.accounts is not self.accounts:
-            # self.ledger.accounts should be reset every time the databse is loaded
+            # self.ledger.accounts should be reset every time the database is loaded
             self.dividend_cache = {}
             self.irr_cache = {}
             self.accounts = self.ledger.accounts
         portfolio_summary = PortfolioSummaryInstance(self.ledger, self.config, self.irr_cache, self.dividend_cache)
         return portfolio_summary.run()
 
+
+def _has_filtered_feature():
+    fava_version = importlib_metadata.version('fava')
+    return parse(fava_version) >= parse('1.22.0')
+
+
+def _ledger_prices(operating_currency, row_currency):
+    if _has_filtered_feature():
+        return g.filtered.prices(operating_currency, row_currency)
+    else:
+        return g.ledger.prices(operating_currency, row_currency)
+
+
 class PortfolioSummaryInstance:  # pragma: no cover
     """Thread-safe instance of Portfolio Summary"""
+
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, ledger, config, irr_cache, dividend_cache):
@@ -69,18 +79,18 @@ class PortfolioSummaryInstance:  # pragma: no cover
             'account': 'Total',
             'balance': ZERO,
             'cost': ZERO,
-            'pnl':ZERO,
-            'dividends':ZERO,
+            'pnl': ZERO,
+            'dividends': ZERO,
             'allocation': 100,
             'mwr': ZERO,
             'twr': ZERO,
             'children': [],
-            'last-date':None
-            }
+            'last-date': None
+        }
         self.all_cols = ["units", "cost", "balance", "pnl", "dividends", "change", "mwr", "twr", "allocation"]
 
     def run(self):
-        """Calculdate summary"""
+        """Calculate summary"""
         all_mwr_internal = set()
         tree = self.ledger.root_tree
         portfolios = []
@@ -102,7 +112,7 @@ class PortfolioSummaryInstance:  # pragma: no cover
             portfolios.append((title, (self._get_types(cols), [portfolio])))
 
         self.total['change'] = round((float(self.total['balance'] - self.total['cost']) /
-                                     (float(self.total['cost'])+.00001)) * 100, 2)
+                                      (float(self.total['cost']) + .00001)) * 100, 2)
         self.total['pnl'] = round(float(self.total['balance'] - self.total['cost']), 2)
         if 'mwr' in seen_cols or 'twr' in seen_cols:
             self.total['mwr'], self.total['twr'] = self._calculate_irr_twr(
@@ -184,17 +194,16 @@ class PortfolioSummaryInstance:  # pragma: no cover
     def _get_types(cols):
         col_map = {
             "units": str(Decimal),
-            "cost":  str(Decimal),
-            "balance":  str(Decimal),
+            "cost": str(Decimal),
+            "balance": str(Decimal),
             "pnl": str(Decimal),
             "dividends": str(Decimal),
-            "change":  'Percent',
-            "mwr":  'Percent',
-            "twr":  'Percent',
-            "allocation":  'Percent',
+            "change": 'Percent',
+            "mwr": 'Percent',
+            "twr": 'Percent',
+            "allocation": 'Percent',
         }
-        types = []
-        types.append(("account", str(str)))
+        types = [("account", str(str))]
         for col in cols:
             types.append((col, col_map[col]))
         return types
@@ -208,7 +217,7 @@ class PortfolioSummaryInstance:  # pragma: no cover
             metadata_key: Metadata key to match for in account open.
             pattern: Metadata value's regex pattern to match for.
         Return:
-            Data structured for use with a querytable - (types, rows).
+            Data structure for use with a querytable - (types, rows).
         """
         # pylint: disable=too-many-arguments
         title = f"{pattern.upper()} portfolios"
@@ -221,7 +230,7 @@ class PortfolioSummaryInstance:  # pragma: no cover
             if entry.account not in tree:
                 continue
             if (metadata_key in entry.meta) and (
-                regexer.match(entry.meta[metadata_key]) is not None
+                    regexer.match(entry.meta[metadata_key]) is not None
             ):
                 selected_accounts.append({'account': tree[entry.account], 'children': []})
                 last_seen = entry.account + ':'
@@ -231,8 +240,7 @@ class PortfolioSummaryInstance:  # pragma: no cover
         portfolio_data = self._portfolio_data(selected_accounts, internal, mwr, twr, dividends)
         return title, portfolio_data
 
-
-    def _process_dividends(self,account,currency):
+    def _process_dividends(self, account, currency):
         parent_name = ":".join(account.name.split(":")[:-1])
         cache_key = (account.name, currency, self.ledger.end_date)
         if cache_key in self.dividend_cache:
@@ -246,36 +254,31 @@ class PortfolioSummaryInstance:  # pragma: no cover
         result = self.ledger.query_shell.execute_query(query)
         self.dividends_elapsed += time.time() - start
         dividends = ZERO
-        if len(result[2])>0:
+        if len(result[2]) > 0:
             for row_cost in result[2]:
-                if len(row_cost.dividends.get_positions())==1:
-                    dividends+=round(abs(row_cost.dividends.get_positions()[0].units.number),2)
+                if len(row_cost.dividends.get_positions()) == 1:
+                    dividends += round(abs(row_cost.dividends.get_positions()[0].units.number), 2)
         self.dividend_cache[cache_key] = dividends
         return dividends
 
     def _process_node(self, node, dividends):
         # pylint: disable=too-many-locals
-        row = {}
+        row = {"account": node.name, 'children': [], "last-date": None, 'pnl': ZERO, 'dividends': ZERO}
 
-        row["account"] = node.name
-        row['children'] = []
-        row["last-date"] = None
-        row['pnl'] = ZERO
-        row['dividends'] = ZERO
-        date=self.ledger.end_date
+        date = self.ledger.end_date
         balance = cost_or_value(node.balance, "at_value", g.ledger.price_map, date=date)
         cost = cost_or_value(node.balance, "at_cost", g.ledger.price_map, date=date)
-        #### ADD Units to the report
+        # ADD Units to the report
         units = cost_or_value(node.balance, "units", g.ledger.price_map, date=date)
-        ### Get row currency
+        # Get row currency
         row_currency = None
         if len(list(units.values())) > 0:
             row["units"] = list(units.values())[0]
             row_currency = list(units.keys())[0]
-        #### END of UNITS
+        # END of UNITS
         if dividends:
             if row_currency is not None and row_currency not in self.ledger.options["operating_currency"]:
-                row['dividends'] = self._process_dividends(node,row_currency)
+                row['dividends'] = self._process_dividends(node, row_currency)
 
         if self.operating_currency in balance and self.operating_currency in cost:
             balance_dec = round(balance[self.operating_currency], 2)
@@ -283,34 +286,40 @@ class PortfolioSummaryInstance:  # pragma: no cover
             row["balance"] = balance_dec
             row["cost"] = cost_dec
 
-        #### ADD other Currencies
+        # ADD other Currencies
         elif (row_currency is not None and self.operating_currency not in balance
-                and self.operating_currency not in cost):
+              and self.operating_currency not in cost):
             total_currency_cost = ZERO
             total_currency_value = ZERO
 
-            result = self.ledger.query_shell.execute_query(
-                "SELECT "
-                f"convert(cost(position),'{self.operating_currency}',cost_date) AS cost, "
-                f"convert(value(position) ,'{self.operating_currency}',today()) AS value "
-                f"WHERE currency = '{row_currency}' AND account ='{node.name}' "
-                "ORDER BY currency, cost_date")
+            query = "SELECT " \
+                    f"convert(cost(position),'{self.operating_currency}',cost_date) AS cost, " \
+                    f"convert(value(position) ,'{self.operating_currency}',today()) AS value " \
+                    f"WHERE currency = '{row_currency}' AND account ='{node.name}' " \
+                    "ORDER BY currency, cost_date"
+            result = self._execute_query(query)
             if len(result) == 3:
-                for row_cost,row_value in result[2]:
-                    total_currency_cost+=row_cost.number
-                    total_currency_value+=row_value.number
+                for row_cost, row_value in result[2]:
+                    total_currency_cost += row_cost.number
+                    total_currency_value += row_value.number
             row["balance"] = round(total_currency_value, 2)
             row["cost"] = round(total_currency_cost, 2)
 
-        ### GET LAST CURRENCY PRICE DATE
+        # GET LAST CURRENCY PRICE DATE
         if row_currency is not None and row_currency != self.operating_currency:
             try:
-                dict_dates = g.ledger.prices(self.operating_currency,row_currency)
-                if len(dict_dates) >0:
+                dict_dates = _ledger_prices(self.operating_currency, row_currency)
+                if len(dict_dates) > 0:
                     row["last-date"] = dict_dates[-1][0]
             except KeyError:
                 pass
         return row
+
+    def _execute_query(self, query):
+        if _has_filtered_feature():
+            return self.ledger.query_shell.execute_query(g.filtered.entries, query)
+        else:
+            return self.ledger.query_shell.execute_query(query)
 
     def _portfolio_data(self, nodes, internal, mwr, twr, dividends):
         """
@@ -329,11 +338,11 @@ class PortfolioSummaryInstance:  # pragma: no cover
             'account': 'Total',
             'balance': ZERO,
             'cost': ZERO,
-            'pnl':ZERO,
-            'dividends':ZERO,
+            'pnl': ZERO,
+            'dividends': ZERO,
             'children': [],
-            'last-date':None
-            }
+            'last-date': None
+        }
         rows.append(total)
 
         for node in nodes:
@@ -366,8 +375,8 @@ class PortfolioSummaryInstance:  # pragma: no cover
         for row in rows:
             if "balance" in row and total['balance'] > 0:
                 row["allocation"] = round((row["balance"] / total['balance']) * 100, 2)
-                row["change"] = round((float(row['balance'] - row['cost']) / (float(row['cost'])+.00001)) * 100, 2)
-                row["pnl"] = round(float(row['balance'] - row['cost']),2)
+                row["change"] = round((float(row['balance'] - row['cost']) / (float(row['cost']) + .00001)) * 100, 2)
+                row["pnl"] = round(float(row['balance'] - row['cost']), 2)
         self.total['balance'] += total['balance']
         self.total['cost'] += total['cost']
         self.total['dividends'] += total['dividends']
