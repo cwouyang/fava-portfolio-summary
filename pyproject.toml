@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "fava_portfolio_summary"
+version = "0.1.dev19+ga4aa004"
+description = "Fava extension to display portfolio summaries including MWRR and TWRR"
+license = "MIT"
+keywords = ["fava", "beancount", "accounting", "investment", "mwrr", "mwr", "twrr", "twr", "irr"]
+classifiers = ["Development Status :: 3 - Alpha", "Intended Audience :: Financial and Insurance Industry", "License :: OSI Approved :: MIT License", "Natural Language :: English", "Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.7", "Topic :: Internet :: WWW/HTTP :: Dynamic Content", "Topic :: Office/Business :: Financial :: Accounting", "Topic :: Office/Business :: Financial :: Investment"]
+homepage = "https://github.com/PhracturedBlue/fava-portfolio-summary"
+authors = ["PhracturedBlue <rc2012@pblue.org>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.6"
+beancount = ">=2.3.4"
+fava = ">=1.20"
