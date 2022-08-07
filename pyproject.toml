@@ -11,5 +11,5 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.6"
-beancount = ">=2.3.4"
-fava = ">=1.20"
+beancount = ">=2.3.5"
+fava = ">=1.22.3"
