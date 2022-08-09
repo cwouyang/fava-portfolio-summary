@@ -10,25 +10,26 @@ as permitted by the Parity Public License
 """
 # pylint: disable=logging-fstring-interpolation broad-except
 import argparse
-import logging
-import sys
-import functools
-import operator
 import collections
 import datetime
+import functools
+import logging
+import operator
 import re
+import sys
 import time
-from pprint import pprint
-
 from decimal import Decimal
-from dateutil.relativedelta import relativedelta
-import beancount.loader
-import beancount.utils
+from pprint import pprint
+from typing import Tuple, List
+
 import beancount.core
-import beancount.core.getters
-import beancount.core.data
 import beancount.core.convert
+import beancount.core.data
+import beancount.core.getters
+import beancount.loader
 import beancount.parser
+import beancount.utils
+from dateutil.relativedelta import relativedelta
 from fava.helpers import BeancountError
 
 # https://github.com/peliot/XIRR-and-XNPV/blob/master/financial.py
@@ -41,49 +42,43 @@ except Exception:
         """
         # pylint: disable=invalid-name
         x1 = x0 * 1.1
-        while abs(x1 - x0)/abs(x1) > tol:
-            x0, x1 = x1, x1 - f(x1) * (x1 - x0)/(f(x1) - f(x0))
+        while abs(x1 - x0) / abs(x1) > tol:
+            x0, x1 = x1, x1 - f(x1) * (x1 - x0) / (f(x1) - f(x0))
         return x1
 
-def xnpv(rate,cashflows):
+
+def xnpv(rate: float, cashflows: List[Tuple[datetime.datetime, float]]) -> float:
     """
     Calculate the net present value of a series of cashflows at irregular intervals.
-    Arguments
-    ---------
-    * rate: the discount rate to be applied to the cash flows
-    * cashflows: a list object in which each element is a tuple of the form (date, amount), where date is a
-                 python datetime.date object and amount is an integer or floating point number. Cash outflows
-                 (investments) are represented with negative amounts, and cash inflows (returns) are positive amounts.
 
-    Returns
-    -------
-    * returns a single value which is the NPV of the given cash flows.
+    :param rate: the discount rate to be applied to the cash flows
+    :param cashflows: a list object in which each element is a tuple of the form (date, amount), where date is a python datetime.date object and amount is an integer or floating point number. Cash outflows (investments) are represented with negative amounts, and cash inflows (returns) are positive amounts.
+    :return: a single value which is the NPV of the given cash flows.
+    :rtype: float
+
     Notes
     ---------------
     * The Net Present Value is the sum of each of cash flows discounted back to the date of the first cash flow. The
-      discounted value of a given cash flow is A/(1+r)**(t-t0), where A is the amount, r is the discout rate, and
+      discounted value of a given cash flow is A/(1+r)**(t-t0), where A is the amount, r is the discount rate, and
       (t-t0) is the time in years from the date of the first cash flow in the series (t0) to the date of the cash flow
       being added to the sum (t).
     * This function is equivalent to the Microsoft Excel function of the same name.
     """
     # pylint: disable=invalid-name
-    chron_order = sorted(cashflows, key = lambda x: x[0])
-    t0 = chron_order[0][0] #t0 is the date of the first cash flow
+    chron_order = sorted(cashflows, key=lambda x: x[0])
+    t0 = chron_order[0][0]  # t0 is the date of the first cash flow
 
-    return sum([cf/(1+rate)**((t-t0).days/365.0) for (t,cf) in chron_order])
+    return sum([cf / (1 + rate) ** ((t - t0).days / 365.0) for (t, cf) in chron_order])
 
-def xirr(cashflows,guess=0.1):
+
+def xirr(cashflows: List[Tuple[datetime.datetime, float]], guess: float = 0.1) -> float:
     """
     Calculate the Internal Rate of Return of a series of cashflows at irregular intervals.
-    Arguments
-    ---------
-    * cashflows: a list object in which each element is a tuple of the form (date, amount), where date is a
-                 python datetime.date object and amount is an integer or floating point number. Cash outflows
-                 (investments) are represented with negative amounts, and cash inflows (returns) are positive amounts.
-    * guess (optional, default = 0.1): a guess to be used as a starting point for the numerical solution.
-    Returns
-    --------
-    * Returns the IRR as a single value
+
+    :param cashflows: a list object in which each element is a tuple of the form (date, amount), where date is a python datetime.date object and amount is an integer or floating point number. Cash outflows (investments) are represented with negative amounts, and cash inflows (returns) are positive amounts.
+    :param guess: a guess to be used as a starting point for the numerical solution.
+    :return: the IRR as a single value
+    :rtype: float
 
     Notes
     ----------------
@@ -98,12 +93,13 @@ def xirr(cashflows,guess=0.1):
       preferred.
     """
     try:
-        return secant_method(lambda r: xnpv(r,cashflows),guess)
+        return secant_method(lambda r: xnpv(r, cashflows), guess)
     except Exception as _e:
         logging.error("No solution found for IRR: %s", _e)
         return 0.0
 
-def xtwrr(periods, debug=False):
+
+def xtwrr(periods, debug=False) -> float:
     """Calculate TWRR from a set of date-ordered periods"""
     dates = sorted(periods.keys())
     last = float(periods[dates[0]][0])
@@ -128,13 +124,6 @@ def xtwrr(periods, debug=False):
     twrr = (1 + mean) ** (365.0 / days) - 1
     return twrr
 
-def fmt_d(num):
-    """Decimal formatter"""
-    return f'${num:,.0f}'
-
-def fmt_pct(num):
-    """Percent formatter"""
-    return f'{num*100:.2f}%'
 
 def add_position(position, inventory):
     """Add a posting to the inventory"""
@@ -148,6 +137,7 @@ def add_position(position, inventory):
 
 class IRR:
     """Wrapper class to allow caching results of multiple calculations to improve performance"""
+
     # pylint: disable=too-many-instance-attributes
     def __init__(self, entries, price_map, currency, errors=None):
         self.all_entries = entries
@@ -201,7 +191,7 @@ class IRR:
     def get_value_as_of(self, postings, date):
         """Get balance for a list of postings at a specified date"""
         inventory = self.get_inventory_as_of_date(date, postings)
-        #balance = inventory.reduce(beancount.core.convert.convert_position, self.currency, self.price_map, date)
+        # balance = inventory.reduce(beancount.core.convert.convert_position, self.currency, self.price_map, date)
         balance = beancount.core.inventory.Inventory()
         if date not in self.market_value:
             self.market_value[date] = {}
@@ -245,8 +235,8 @@ class IRR:
                   mwr=True, twr=False,
                   cashflows=None, inflow_accounts=None, outflow_accounts=None,
                   debug_twr=False):
-        """Calulate MWRR or TWRR for a set of accounts"""
-        ## pylint: disable=too-many-branches too-many-statements too-many-locals too-many-arguments
+        """Calculate MWRR or TWRR for a set of accounts"""
+        # pylint: disable=too-many-branches too-many-statements too-many-locals too-many-arguments
         self.interesting.clear()
         self.internal.clear()
         self.inventory.clear()
@@ -263,11 +253,11 @@ class IRR:
         elapsed = [0, 0, 0, 0, 0, 0, 0, 0]
         elapsed[0] = time.time()
         if internal_patterns:
-            self.internal_patterns = re.compile(fr'^(?:{ "|".join(internal_patterns) })$')
+            self.internal_patterns = re.compile(fr'^(?:{"|".join(internal_patterns)})$')
         else:
             self.internal_patterns = re.compile('^$')
 
-        self.patterns = re.compile(fr'^(?:{ "|".join(patterns) })$')
+        self.patterns = re.compile(fr'^(?:{"|".join(patterns)})$')
 
         elapsed[1] = time.time()
         only_txns = beancount.core.data.filter_txns(self.all_entries)
@@ -279,10 +269,10 @@ class IRR:
         self.remaining = collections.deque(interesting_txns)
         twrr_periods = {}
 
-        #p1 = get_inventory_as_of_date(datetime.date(2000, 3, 31), interesting_txns)
-        #p2 = get_inventory_as_of_date(datetime.date(2000, 4, 17), interesting_txns)
-        #p1a = get_inventory_as_of_date(datetime.date(2000, 3, 31), None)
-        #p2a = get_inventory_as_of_date(datetime.date(2000, 4, 17), None)
+        # p1 = get_inventory_as_of_date(datetime.date(2000, 3, 31), interesting_txns)
+        # p2 = get_inventory_as_of_date(datetime.date(2000, 4, 17), interesting_txns)
+        # p1a = get_inventory_as_of_date(datetime.date(2000, 3, 31), None)
+        # p2a = get_inventory_as_of_date(datetime.date(2000, 4, 17), None)
 
         for entry in interesting_txns:
             if not start_date <= entry.date <= end_date:
@@ -305,7 +295,7 @@ class IRR:
             for posting in entry.postings:
                 # convert_position uses the price-map to do price conversions, but this does not necessarily
                 # accurately represent the cost at transaction time (due to intra-day variations).  That
-                # could cause inacuracy, but since the cashflow is applied to the daily balance, it is more
+                # could cause inaccuracy, but since the cashflow is applied to the daily balance, it is more
                 # important to be consistent with values
                 converted = beancount.core.convert.convert_position(
                     posting, self.currency, self.price_map, entry.date)
@@ -317,7 +307,7 @@ class IRR:
                     else:
                         logging.error(f'Could not convert posting {converted} from {entry.date} at '
                                       f'{posting.meta["filename"]}:{posting.meta["lineno"]} to {self.currency}. '
-                                       'IRR will be wrong.')
+                                      'IRR will be wrong.')
                         self._error(
                             f"Could not convert posting {converted} from {entry.date}, IRR will be wrong",
                             posting.meta)
@@ -366,7 +356,7 @@ class IRR:
         if mwr:
             if cashflows:
                 # we need to coerce everything to a float for xirr to work...
-                irr = xirr([(d, float(f)) for (d,f) in cashflows])
+                irr = xirr([(d, float(f)) for (d, f) in cashflows])
             else:
                 logging.error(f'No cashflows found during the time period {start_date} -> {end_date}')
         elapsed[6] = time.time()
@@ -374,14 +364,15 @@ class IRR:
             twrr = xtwrr(twrr_periods, debug=debug_twr)
         elapsed[7] = time.time()
         for i in range(7):
-            delta = elapsed[i+1] - elapsed[i]
+            delta = elapsed[i + 1] - elapsed[i]
             self.times[i] += delta
             # print(f"T{i}: delta")
         return irr, twrr
 
+
 def main():
     """Entrypoint"""
-    ## pylint: disable=too-many-branches too-many-statements
+    # pylint: disable=too-many-branches too-many-statements
     logging.basicConfig(format='%(levelname)s: %(message)s')
     parser = argparse.ArgumentParser(
         description="Calculate return data."
@@ -389,14 +380,14 @@ def main():
     parser.add_argument('bean', help='Path to the beancount file.')
     parser.add_argument('--currency', default='USD', help='Currency to use for calculating returns.')
     parser.add_argument('--account', action='append', default=[],
-        help='Regex pattern of accounts to include when calculating returns. Can be specified multiple times.')
+                        help='Regex pattern of accounts to include when calculating returns. Can be specified multiple times.')
     parser.add_argument('--internal', action='append', default=[],
-        help='Regex pattern of accounts that represent internal cashflows (i.e. dividends or interest)')
+                        help='Regex pattern of accounts that represent internal cashflows (i.e. dividends or interest)')
 
     parser.add_argument('--from', dest='date_from', type=lambda d: datetime.datetime.strptime(d, '%Y-%m-%d').date(),
-        help='Start date: YYYY-MM-DD, 2016-12-31')
+                        help='Start date: YYYY-MM-DD, 2016-12-31')
     parser.add_argument('--to', dest='date_to', type=lambda d: datetime.datetime.strptime(d, '%Y-%m-%d').date(),
-        help='End date YYYY-MM-DD, 2016-12-31')
+                        help='End date YYYY-MM-DD, 2016-12-31')
 
     date_range = parser.add_mutually_exclusive_group()
     date_range.add_argument('--year', default=False, type=int, help='Year. Shorthand for --from/--to.')
@@ -408,13 +399,13 @@ def main():
     date_range.add_argument('--10year', action='store_true')
 
     parser.add_argument('--debug-inflows', action='store_true',
-        help='Print list of all inflow accounts in transactions.')
+                        help='Print list of all inflow accounts in transactions.')
     parser.add_argument('--debug-outflows', action='store_true',
-        help='Print list of all outflow accounts in transactions.')
+                        help='Print list of all outflow accounts in transactions.')
     parser.add_argument('--debug-cashflows', action='store_true',
-        help='Print list of all cashflows used for the IRR calculation.')
+                        help='Print list of all cashflows used for the IRR calculation.')
     parser.add_argument('--debug-twr', action='store_true',
-        help='Print calculations for TWR.')
+                        help='Print calculations for TWR.')
 
     args = parser.parse_args()
 
@@ -480,6 +471,7 @@ def main():
     if args.debug_outflows:
         print('<< [outflows]')
         pprint(outflow_accounts)
+
 
 if __name__ == '__main__':
     main()
