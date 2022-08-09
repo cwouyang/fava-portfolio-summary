@@ -10,7 +10,8 @@ authors = ["PhracturedBlue <rc2012@pblue.org>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.6"
+python = ">=3.8,<3.12"
 beancount = ">=2.3.5"
 fava = ">=1.22.3"
 packaging = "^21.3"
+scipy = "^1.9.0"
