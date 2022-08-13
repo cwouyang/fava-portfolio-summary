@@ -16,8 +16,6 @@ import functools
 import logging
 import operator
 import re
-import sys
-import time
 from decimal import Decimal
 from pprint import pprint
 from typing import Tuple, List
@@ -29,6 +27,8 @@ import beancount.core.getters
 import beancount.loader
 import beancount.parser
 import beancount.utils
+import sys
+import time
 from dateutil.relativedelta import relativedelta
 from fava.helpers import BeancountError
 
@@ -135,6 +135,21 @@ def add_position(position, inventory):
         raise Exception("Not a Posting or TxnPosting", position)
 
 
+class PostingAccountFilter:
+    def __init__(self, patterns=None):
+        if patterns:
+            self.patterns = re.compile(fr'^(?:{"|".join(patterns)})$')
+        else:
+            self.patterns = re.compile('^$')
+        self.cache = {}
+
+    def is_passed(self, posting):
+        account = posting.account
+        if account not in self.cache:
+            self.cache[account] = bool(self.patterns.search(account))
+        return self.cache[account]
+
+
 class IRR:
     """Wrapper class to allow caching results of multiple calculations to improve performance"""
 
@@ -145,28 +160,28 @@ class IRR:
         self.currency = currency
         self.market_value = {}
         self.times = [0, 0, 0, 0, 0, 0, 0]
+        self.errors = errors
         # The following reset after each calculate call()
         self.remaining = collections.deque()
         self.inventory = beancount.core.inventory.Inventory()
-        self.interesting = {}
-        self.internal = {}
-        self.patterns = None
-        self.internal_patterns = None
-        self.errors = errors
+
+    def reset(self):
+        self.remaining = collections.deque()
+        self.inventory.clear()
 
     def _error(self, msg, meta=None):
         if self.errors:
             if not any(_.source == meta and _.message == msg and _.entry is None for _ in self.errors):
                 self.errors.append(BeancountError(meta, msg, None))
 
-    def elapsed(self):
+    def elapsed(self) -> float:
         """Elapsed time of all runs of calculate()"""
         return sum(self.times)
 
-    def iter_interesting_postings(self, date, entries):
+    def iter_interesting_postings(self, date, posting_account_filter, postings=None):
         """Iterator for 'interesting' postings up-to a specified date"""
-        if entries:
-            remaining_postings = collections.deque(entries)
+        if postings:
+            remaining_postings = collections.deque(postings)
         else:
             remaining_postings = self.remaining
         while remaining_postings:
@@ -175,22 +190,22 @@ class IRR:
                 remaining_postings.appendleft(entry)
                 break
             for _p in entry.postings:
-                if self.is_interesting_posting(_p):
+                if posting_account_filter.is_passed(_p):
                     yield _p
 
-    def get_inventory_as_of_date(self, date, postings):
+    def get_inventory_as_of_date(self, date, posting_account_filter, postings=None):
         """Get postings up-to a specified date"""
         if postings:
             inventory = beancount.core.inventory.Inventory()
         else:
             inventory = self.inventory
-        for _p in self.iter_interesting_postings(date, postings):
+        for _p in self.iter_interesting_postings(date, posting_account_filter, postings):
             add_position(_p, inventory)
         return inventory
 
-    def get_value_as_of(self, postings, date):
+    def get_value_as_of(self, date, posting_account_filter, postings=None):
         """Get balance for a list of postings at a specified date"""
-        inventory = self.get_inventory_as_of_date(date, postings)
+        inventory = self.get_inventory_as_of_date(date, posting_account_filter, postings)
         # balance = inventory.reduce(beancount.core.convert.convert_position, self.currency, self.price_map, date)
         balance = beancount.core.inventory.Inventory()
         if date not in self.market_value:
@@ -212,34 +227,12 @@ class IRR:
         amount = balance.get_currency_units(self.currency)
         return amount.number
 
-    def is_interesting_posting(self, posting):
-        """ Is this posting for an account we care about? """
-        if posting.account not in self.interesting:
-            self.interesting[posting.account] = bool(self.patterns.search(posting.account))
-        return self.interesting[posting.account]
-
-    def is_internal_account(self, posting):
-        """ Is this an internal account that should be ignored? """
-        if posting.account not in self.internal:
-            self.internal[posting.account] = bool(self.internal_patterns.search(posting.account))
-        return self.internal[posting.account]
-
-    def is_interesting_entry(self, entry):
-        """ Do any of the postings link to any of the accounts we care about? """
-        for posting in entry.postings:
-            if self.is_interesting_posting(posting):
-                return True
-        return False
-
     def calculate(self, patterns, internal_patterns=None, start_date=None, end_date=None,
                   mwr=True, twr=False,
                   cashflows=None, inflow_accounts=None, outflow_accounts=None,
                   debug_twr=False):
         """Calculate MWRR or TWRR for a set of accounts"""
         # pylint: disable=too-many-branches too-many-statements too-many-locals too-many-arguments
-        self.interesting.clear()
-        self.internal.clear()
-        self.inventory.clear()
         if cashflows is None:
             cashflows = []
         if inflow_accounts is None:
@@ -250,22 +243,12 @@ class IRR:
             start_date = datetime.date.min
         if not end_date:
             end_date = datetime.date.today()
+
+        interesting_posting_account_filter = PostingAccountFilter(patterns)
+        internal_posting_account_filter = PostingAccountFilter(internal_patterns)
+        self.reset()
         elapsed = [0, 0, 0, 0, 0, 0, 0, 0]
-        elapsed[0] = time.time()
-        if internal_patterns:
-            self.internal_patterns = re.compile(fr'^(?:{"|".join(internal_patterns)})$')
-        else:
-            self.internal_patterns = re.compile('^$')
-
-        self.patterns = re.compile(fr'^(?:{"|".join(patterns)})$')
-
-        elapsed[1] = time.time()
-        only_txns = beancount.core.data.filter_txns(self.all_entries)
-        elapsed[2] = time.time()
-        interesting_txns = filter(self.is_interesting_entry, only_txns)
-        elapsed[3] = time.time()
-        # pull it into a list, instead of an iterator, because we're going to reuse it several times
-        interesting_txns = list(interesting_txns)
+        interesting_txns = self.collect_interesting_txns(interesting_posting_account_filter)
         self.remaining = collections.deque(interesting_txns)
         twrr_periods = {}
 
@@ -315,9 +298,9 @@ class IRR:
                 else:
                     value = converted.number
 
-                if self.is_interesting_posting(posting):
+                if interesting_posting_account_filter.is_passed(posting):
                     cashflow += value
-                elif self.is_internal_account(posting):
+                elif internal_posting_account_filter.is_passed(posting):
                     cashflow += value
                 else:
                     if value > 0:
@@ -329,11 +312,12 @@ class IRR:
                 cashflows.append((entry.date, cashflow))
                 if twr:
                     if entry.date not in twrr_periods:
-                        twrr_periods[entry.date] = [self.get_value_as_of(None, entry.date), 0]
+                        twrr_periods[entry.date] = [
+                            self.get_value_as_of(entry.date, interesting_posting_account_filter), 0]
                     twrr_periods[entry.date][1] += cashflow
 
         elapsed[4] = time.time()
-        start_value = self.get_value_as_of(interesting_txns, start_date)
+        start_value = self.get_value_as_of(start_date, interesting_posting_account_filter, interesting_txns)
         if start_date not in twrr_periods and start_date != datetime.date.min:
             twrr_periods[start_date] = [start_value, 0]  # We want the after-cashflow value
         # the start_value will include any cashflows that occurred on that date...
@@ -341,7 +325,7 @@ class IRR:
         # list. So we need to deduct them from start_value
         opening_txns = [amount for (date, amount) in cashflows if date == start_date]
         start_value -= functools.reduce(operator.add, opening_txns, 0)
-        end_value = self.get_value_as_of(None, end_date)
+        end_value = self.get_value_as_of(end_date, interesting_posting_account_filter)
         if end_date not in twrr_periods:
             twrr_periods[end_date] = [end_value, 0]
         # if starting balance isn't $0 at starting time period then we need a cashflow
@@ -369,6 +353,19 @@ class IRR:
             # print(f"T{i}: delta")
         return irr, twrr
 
+    def collect_interesting_txns(self, posting_account_filter):
+        """ Collect transactions that link to any accounts we interest 
+        """
+
+        def is_interesting_entry(entry):
+            for posting in entry.postings:
+                if posting_account_filter.is_passed(posting):
+                    return True
+            return False
+
+        only_txns = beancount.core.data.filter_txns(self.all_entries)
+        interesting_txns = filter(is_interesting_entry, only_txns)
+        return list(interesting_txns)
 
 
 class ArgsParser:
