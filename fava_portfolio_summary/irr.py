@@ -257,11 +257,11 @@ class IRR:
         # p1a = get_inventory_as_of_date(datetime.date(2000, 3, 31), None)
         # p2a = get_inventory_as_of_date(datetime.date(2000, 4, 17), None)
 
-        for entry in interesting_txns:
-            if not start_date <= entry.date <= end_date:
+        for txns in interesting_txns:
+            txns_date = txns.date
+            if not start_date <= txns_date <= end_date:
                 continue
 
-            cashflow = Decimal(0)
             # Imagine an entry that looks like
             # [Posting(account=Assets:Brokerage, amount=100),
             #  Posting(account=Income:Dividend, amount=-100)]
@@ -275,46 +275,17 @@ class IRR:
             # we track the cashflow. But we *also* look for "internal"
             # cashflows and subtract them out. This will leave a net $0
             # if all the cashflows are internal.
-            for posting in entry.postings:
-                # convert_position uses the price-map to do price conversions, but this does not necessarily
-                # accurately represent the cost at transaction time (due to intra-day variations).  That
-                # could cause inaccuracy, but since the cashflow is applied to the daily balance, it is more
-                # important to be consistent with values
-                converted = beancount.core.convert.convert_position(
-                    posting, self.currency, self.price_map, entry.date)
-                if converted.currency != self.currency:
-                    # If the price_map does not contain a valid price, see if it can be calculated from cost
-                    # This must align with get_value_as_of()
-                    if posting.cost and posting.cost.currency == self.currency:
-                        value = posting.cost.number * posting.units.number
-                    else:
-                        logging.error(f'Could not convert posting {converted} from {entry.date} at '
-                                      f'{posting.meta["filename"]}:{posting.meta["lineno"]} to {self.currency}. '
-                                      'IRR will be wrong.')
-                        self._error(
-                            f"Could not convert posting {converted} from {entry.date}, IRR will be wrong",
-                            posting.meta)
-                        continue
-                else:
-                    value = converted.number
-
-                if interesting_posting_account_filter.is_passed(posting):
-                    cashflow += value
-                elif internal_posting_account_filter.is_passed(posting):
-                    cashflow += value
-                else:
-                    if value > 0:
-                        outflow_accounts.add(posting.account)
-                    else:
-                        inflow_accounts.add(posting.account)
+            cashflow = self.compute_cacheflow_from_transaction(txns, interesting_posting_account_filter,
+                                                               internal_posting_account_filter, inflow_accounts,
+                                                               outflow_accounts)
             # calculate net cashflow & the date
             if cashflow.quantize(Decimal('.01')) != 0:
-                cashflows.append((entry.date, cashflow))
+                cashflows.append((txns_date, cashflow))
                 if twr:
-                    if entry.date not in twrr_periods:
-                        twrr_periods[entry.date] = [
-                            self.get_value_as_of(entry.date, interesting_posting_account_filter), 0]
-                    twrr_periods[entry.date][1] += cashflow
+                    if txns_date not in twrr_periods:
+                        twrr_periods[txns_date] = [
+                            self.get_value_as_of(txns_date, interesting_posting_account_filter), 0]
+                    twrr_periods[txns_date][1] += cashflow
 
         elapsed[4] = time.time()
         start_value = self.get_value_as_of(start_date, interesting_posting_account_filter, interesting_txns)
@@ -352,6 +323,50 @@ class IRR:
             self.times[i] += delta
             # print(f"T{i}: delta")
         return irr, twrr
+
+    def compute_cacheflow_from_transaction(self, txns, interesting_posting_account_filter,
+                                           internal_posting_account_filter, inflow_accounts,
+                                           outflow_accounts) -> Decimal:
+        cashflow = Decimal(0)
+        for posting in txns.postings:
+            try:
+                value = self.convert_posting_value_to_target_currency(posting, txns.date, self.currency)
+            except ValueError:
+                continue
+
+            if interesting_posting_account_filter.is_passed(posting):
+                cashflow += value
+            elif internal_posting_account_filter.is_passed(posting):
+                cashflow += value
+            else:
+                if value > 0:
+                    outflow_accounts.add(posting.account)
+                else:
+                    inflow_accounts.add(posting.account)
+        return cashflow
+
+    def convert_posting_value_to_target_currency(self, posting, date, currency) -> float:
+        # convert_position uses the price-map to do price conversions, but this does not necessarily
+        # accurately represent the cost at transaction time (due to intra-day variations).  That
+        # could cause inaccuracy, but since the cashflow is applied to the daily balance, it is more
+        # important to be consistent with values
+        converted = beancount.core.convert.convert_position(
+            posting, currency, self.price_map, date)
+        if converted.currency != currency:
+            # If the price_map does not contain a valid price, see if it can be calculated from cost
+            # This must align with get_value_as_of()
+            if posting.cost and posting.cost.currency == currency:
+                value = posting.cost.number * posting.units.number
+            else:
+                error_msg = f'Could not convert posting {converted} from {date}'
+                logging.error(error_msg +
+                              f' at {posting.meta["filename"]}:{posting.meta["lineno"]} to {currency}. '
+                              'IRR will be wrong.')
+                self._error(f"{error_msg}, IRR will be wrong", posting.meta)
+                raise ValueError(error_msg)
+        else:
+            value = converted.number
+        return value
 
     def collect_interesting_txns(self, posting_account_filter):
         """ Collect transactions that link to any accounts we interest 
@@ -482,6 +497,7 @@ def main():
     if twr:
         print(f"TWR: {twr}")
     if args.debug_cashflows:
+        print('[cashflows]')
         pprint(cashflows)
     if args.debug_inflows:
         print('>> [inflows]')
