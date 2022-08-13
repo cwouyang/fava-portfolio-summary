@@ -370,83 +370,104 @@ class IRR:
         return irr, twrr
 
 
+
+class ArgsParser:
+    """Parser used for parsing arguments when run irr.py directly"""
+
+    def __init__(self):
+        self.year = 'year'
+        self.ytd = 'ytd'
+        one_year = '1year'
+        two_year = '2year'
+        three_year = '3year'
+        five_year = '5year'
+        ten_year = '10year'
+
+        parser = argparse.ArgumentParser(
+            description="Calculate return data."
+        )
+        parser.add_argument('bean', help='Path to the beancount file.')
+        parser.add_argument('--currency', default='USD', help='Currency to use for calculating returns.')
+        parser.add_argument('--account', action='append', default=[],
+                            help='Regex pattern of accounts to include when calculating returns. Can be specified multiple times.')
+        parser.add_argument('--internal', action='append', default=[],
+                            help='Regex pattern of accounts that represent internal cashflows (i.e. dividends or interest)')
+        date_format = '%Y-%m-%d'
+        parser.add_argument('--from', dest='date_from',
+                            type=lambda d: datetime.datetime.strptime(d, date_format).date(),
+                            help='Start date: YYYY-MM-DD, 2016-12-31')
+        parser.add_argument('--to', dest='date_to', type=lambda d: datetime.datetime.strptime(d, date_format).date(),
+                            help='End date YYYY-MM-DD, 2016-12-31')
+        date_range = parser.add_mutually_exclusive_group()
+        date_range.add_argument(f'--{self.year}', default=False, type=int, help='Year. Shorthand for --from/--to.')
+        date_range.add_argument(f'--{self.ytd}', action='store_true')
+        date_range.add_argument(f'--{one_year}', action='store_true')
+        date_range.add_argument(f'--{two_year}', action='store_true')
+        date_range.add_argument(f'--{three_year}', action='store_true')
+        date_range.add_argument(f'--{five_year}', action='store_true')
+        date_range.add_argument(f'--{ten_year}', action='store_true')
+        parser.add_argument('--debug-inflows', action='store_true',
+                            help='Print list of all inflow accounts in transactions.')
+        parser.add_argument('--debug-outflows', action='store_true',
+                            help='Print list of all outflow accounts in transactions.')
+        parser.add_argument('--debug-cashflows', action='store_true',
+                            help='Print list of all cashflows used for the IRR calculation.')
+        parser.add_argument('--debug-twr', action='store_true',
+                            help='Print calculations for TWR.')
+        self.parser = parser
+
+        self.year_to_offset = {
+            one_year: -1,
+            two_year: -2,
+            three_year: -3,
+            five_year: -5,
+            ten_year: -10
+        }
+
+    def parse(self):
+        args = self.parser.parse_args()
+        return self._postprocess_args(args)
+
+    def _postprocess_args(self, args):
+        shortcuts = [self.year, self.ytd]
+        shortcuts.extend(self.year_to_offset.keys())
+        shortcut_used = functools.reduce(operator.__or__, [getattr(args, x) for x in shortcuts])
+        if shortcut_used and (args.date_from or args.date_to):
+            raise Exception('Date shortcut options mutually exclusive with --to/--from options')
+
+        today = datetime.date.today()
+        if getattr(args, self.year):
+            args.date_from = datetime.date(args.year, 1, 1)
+            args.date_to = datetime.date(args.year, 12, 31)
+        elif getattr(args, self.ytd):
+            args.date_from = datetime.date(today.year, 1, 1)
+            args.date_to = today
+        else:
+            for year, offset in self.year_to_offset.items():
+                if getattr(args, year):
+                    args.date_from = today + relativedelta(years=offset)
+                    args.date_to = today
+                    break
+        # Set default value when no flag was provided
+        if args.date_from is None:
+            args.date_from = datetime.date.min
+        if args.date_to is None:
+            args.date_to = today
+
+        # Clean up attributes that will not be used anymore for following operation
+        delattr(args, self.year)
+        delattr(args, self.ytd)
+        for year in self.year_to_offset.keys():
+            delattr(args, year)
+
+        return args
+
+
 def main():
     """Entrypoint"""
     # pylint: disable=too-many-branches too-many-statements
     logging.basicConfig(format='%(levelname)s: %(message)s')
-    parser = argparse.ArgumentParser(
-        description="Calculate return data."
-    )
-    parser.add_argument('bean', help='Path to the beancount file.')
-    parser.add_argument('--currency', default='USD', help='Currency to use for calculating returns.')
-    parser.add_argument('--account', action='append', default=[],
-                        help='Regex pattern of accounts to include when calculating returns. Can be specified multiple times.')
-    parser.add_argument('--internal', action='append', default=[],
-                        help='Regex pattern of accounts that represent internal cashflows (i.e. dividends or interest)')
-
-    parser.add_argument('--from', dest='date_from', type=lambda d: datetime.datetime.strptime(d, '%Y-%m-%d').date(),
-                        help='Start date: YYYY-MM-DD, 2016-12-31')
-    parser.add_argument('--to', dest='date_to', type=lambda d: datetime.datetime.strptime(d, '%Y-%m-%d').date(),
-                        help='End date YYYY-MM-DD, 2016-12-31')
-
-    date_range = parser.add_mutually_exclusive_group()
-    date_range.add_argument('--year', default=False, type=int, help='Year. Shorthand for --from/--to.')
-    date_range.add_argument('--ytd', action='store_true')
-    date_range.add_argument('--1year', action='store_true')
-    date_range.add_argument('--2year', action='store_true')
-    date_range.add_argument('--3year', action='store_true')
-    date_range.add_argument('--5year', action='store_true')
-    date_range.add_argument('--10year', action='store_true')
-
-    parser.add_argument('--debug-inflows', action='store_true',
-                        help='Print list of all inflow accounts in transactions.')
-    parser.add_argument('--debug-outflows', action='store_true',
-                        help='Print list of all outflow accounts in transactions.')
-    parser.add_argument('--debug-cashflows', action='store_true',
-                        help='Print list of all cashflows used for the IRR calculation.')
-    parser.add_argument('--debug-twr', action='store_true',
-                        help='Print calculations for TWR.')
-
-    args = parser.parse_args()
-
-    shortcuts = ['year', 'ytd', '1year', '2year', '3year', '5year', '10year']
-    shortcut_used = functools.reduce(operator.__or__, [getattr(args, x) for x in shortcuts])
-    if shortcut_used and (args.date_from or args.date_to):
-        raise Exception('Date shortcut options mutually exclusive with --to/--from options')
-
-    if args.year:
-        args.date_from = datetime.date(args.year, 1, 1)
-        args.date_to = datetime.date(args.year, 12, 31)
-
-    if args.ytd:
-        today = datetime.date.today()
-        args.date_from = datetime.date(today.year, 1, 1)
-        args.date_to = today
-
-    if getattr(args, '1year'):
-        today = datetime.date.today()
-        args.date_from = today + relativedelta(years=-1)
-        args.date_to = today
-
-    if getattr(args, '2year'):
-        today = datetime.date.today()
-        args.date_from = today + relativedelta(years=-2)
-        args.date_to = today
-
-    if getattr(args, '3year'):
-        today = datetime.date.today()
-        args.date_from = today + relativedelta(years=-3)
-        args.date_to = today
-
-    if getattr(args, '5year'):
-        today = datetime.date.today()
-        args.date_from = today + relativedelta(years=-5)
-        args.date_to = today
-
-    if getattr(args, '10year'):
-        today = datetime.date.today()
-        args.date_from = today + relativedelta(years=-10)
-        args.date_to = today
+    args = ArgsParser().parse()
 
     entries, _errors, _options = beancount.loader.load_file(args.bean, logging.info, log_errors=sys.stderr)
     price_map = beancount.core.prices.build_price_map(entries)
