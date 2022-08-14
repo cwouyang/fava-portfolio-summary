@@ -125,16 +125,6 @@ def xtwrr(periods, debug=False) -> float:
     return twrr
 
 
-def add_position(position, inventory):
-    """Add a posting to the inventory"""
-    if isinstance(position, beancount.core.data.Posting):
-        inventory.add_position(position)
-    elif isinstance(position, beancount.core.data.TxnPosting):
-        inventory.add_position(position.posting)
-    else:
-        raise Exception("Not a Posting or TxnPosting", position)
-
-
 class PostingAccountFilter:
     def __init__(self, patterns=None):
         if patterns:
@@ -174,28 +164,37 @@ class IRR:
         """Elapsed time of all runs of calculate()"""
         return sum(self.times)
 
-    def iter_interesting_postings(self, date, posting_account_filter, postings=None):
-        """Iterator for 'interesting' postings up-to a specified date"""
-        if postings:
-            remaining_postings = collections.deque(postings)
-        else:
-            remaining_postings = self.remaining
-        while remaining_postings:
-            entry = remaining_postings.popleft()
-            if entry.date > date:
-                remaining_postings.appendleft(entry)
-                break
-            for _p in entry.postings:
-                if posting_account_filter.is_passed(_p):
-                    yield _p
-
     def get_inventory_as_of_date(self, date, posting_account_filter, postings=None):
         """Get postings up-to a specified date"""
+        def iter_interesting_postings():
+            """Iterator for 'interesting' postings up-to a specified date"""
+            if postings:
+                remaining_postings = collections.deque(postings)
+            else:
+                remaining_postings = self.remaining
+            while remaining_postings:
+                entry = remaining_postings.popleft()
+                if entry.date > date:
+                    remaining_postings.appendleft(entry)
+                    break
+                for _p in entry.postings:
+                    if posting_account_filter.is_passed(_p):
+                        yield _p
+
+        def add_position(position, inv):
+            """Add a posting to the inventory"""
+            if isinstance(position, beancount.core.data.Posting):
+                inv.add_position(position)
+            elif isinstance(position, beancount.core.data.TxnPosting):
+                inv.add_position(position.posting)
+            else:
+                raise Exception("Not a Posting or TxnPosting", position)
+
         if postings:
             inventory = beancount.core.inventory.Inventory()
         else:
             inventory = self.inventory
-        for _p in self.iter_interesting_postings(date, posting_account_filter, postings):
+        for _p in iter_interesting_postings():
             add_position(_p, inventory)
         return inventory
 
@@ -284,8 +283,8 @@ class IRR:
 
         start_value = self.get_value_as_of(start_date, interesting_posting_account_filter, interesting_txns)
         end_value = self.get_value_as_of(end_date, interesting_posting_account_filter)
-        self.adjust_twrr_periods(twrr_periods, start_date, start_value, end_date, end_value)
-        self.adjust_cashflows(cashflows, start_date, start_value, end_date, end_value)
+        IRR.adjust_twrr_periods(twrr_periods, start_date, start_value, end_date, end_value)
+        IRR.adjust_cashflows(cashflows, start_date, start_value, end_date, end_value)
 
         irr = None
         twrr = None
@@ -364,14 +363,16 @@ class IRR:
         else:
             value = converted.number
         return value
-    
-    def adjust_twrr_periods(self, twrr_periods, start_date, start_value, end_date, end_value):
+
+    @staticmethod
+    def adjust_twrr_periods(twrr_periods, start_date, start_value, end_date, end_value):
         if start_date not in twrr_periods and start_date != datetime.date.min:
             twrr_periods[start_date] = [start_value, 0]  # We want the after-cashflow value
         if end_date not in twrr_periods:
             twrr_periods[end_date] = [end_value, 0]
 
-    def adjust_cashflows(self, cashflows, start_date, start_value, end_date, end_value):
+    @staticmethod
+    def adjust_cashflows(cashflows, start_date, start_value, end_date, end_value):
         # the start_value will include any cashflows that occurred on that date...
         # this leads to double-counting them, since they'll also appear in our cashflows
         # list. So we need to deduct them from start_value
@@ -383,7 +384,6 @@ class IRR:
         # if ending balance isn't $0 at end of time period then we need a cashflow
         if end_value != 0:
             cashflows.append((end_date, -end_value))
-
 
 
 class ArgsParser:
