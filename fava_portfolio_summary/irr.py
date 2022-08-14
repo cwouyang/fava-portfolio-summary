@@ -159,15 +159,11 @@ class IRR:
         self.price_map = price_map
         self.currency = currency
         self.market_value = {}
-        self.times = [0, 0, 0, 0, 0, 0, 0]
+        self.times = [0, 0]
         self.errors = errors
         # The following reset after each calculate call()
         self.remaining = collections.deque()
         self.inventory = beancount.core.inventory.Inventory()
-
-    def reset(self):
-        self.remaining = collections.deque()
-        self.inventory.clear()
 
     def _error(self, msg, meta=None):
         if self.errors:
@@ -243,13 +239,12 @@ class IRR:
             start_date = datetime.date.min
         if not end_date:
             end_date = datetime.date.today()
-
         interesting_posting_account_filter = PostingAccountFilter(patterns)
         internal_posting_account_filter = PostingAccountFilter(internal_patterns)
-        self.reset()
-        elapsed = [0, 0, 0, 0, 0, 0, 0, 0]
+
         interesting_txns = self.collect_interesting_txns(interesting_posting_account_filter)
         self.remaining = collections.deque(interesting_txns)
+        self.inventory.clear()
         twrr_periods = {}
 
         # p1 = get_inventory_as_of_date(datetime.date(2000, 3, 31), interesting_txns)
@@ -287,42 +282,44 @@ class IRR:
                             self.get_value_as_of(txns_date, interesting_posting_account_filter), 0]
                     twrr_periods[txns_date][1] += cashflow
 
-        elapsed[4] = time.time()
         start_value = self.get_value_as_of(start_date, interesting_posting_account_filter, interesting_txns)
-        if start_date not in twrr_periods and start_date != datetime.date.min:
-            twrr_periods[start_date] = [start_value, 0]  # We want the after-cashflow value
-        # the start_value will include any cashflows that occurred on that date...
-        # this leads to double-counting them, since they'll also appear in our cashflows
-        # list. So we need to deduct them from start_value
-        opening_txns = [amount for (date, amount) in cashflows if date == start_date]
-        start_value -= functools.reduce(operator.add, opening_txns, 0)
         end_value = self.get_value_as_of(end_date, interesting_posting_account_filter)
-        if end_date not in twrr_periods:
-            twrr_periods[end_date] = [end_value, 0]
-        # if starting balance isn't $0 at starting time period then we need a cashflow
-        if start_value != 0:
-            cashflows.insert(0, (start_date, start_value))
-        # if ending balance isn't $0 at end of time period then we need a cashflow
-        if end_value != 0:
-            cashflows.append((end_date, -end_value))
+        self.adjust_twrr_periods(twrr_periods, start_date, start_value, end_date, end_value)
+        self.adjust_cashflows(cashflows, start_date, start_value, end_date, end_value)
+
         irr = None
         twrr = None
-        elapsed[5] = time.time()
+        elapsed = [0, 0, 0]
+        elapsed[0] = time.time()
         if mwr:
             if cashflows:
                 # we need to coerce everything to a float for xirr to work...
                 irr = xirr([(d, float(f)) for (d, f) in cashflows])
             else:
                 logging.error(f'No cashflows found during the time period {start_date} -> {end_date}')
-        elapsed[6] = time.time()
+        elapsed[1] = time.time()
         if twr and twrr_periods:
             twrr = xtwrr(twrr_periods, debug=debug_twr)
-        elapsed[7] = time.time()
-        for i in range(7):
+        elapsed[2] = time.time()
+        for i in range(2):
             delta = elapsed[i + 1] - elapsed[i]
             self.times[i] += delta
             # print(f"T{i}: delta")
         return irr, twrr
+
+    def collect_interesting_txns(self, posting_account_filter):
+        """ Collect transactions that link to any accounts we interest 
+        """
+
+        def is_interesting_entry(entry):
+            for posting in entry.postings:
+                if posting_account_filter.is_passed(posting):
+                    return True
+            return False
+
+        only_txns = beancount.core.data.filter_txns(self.all_entries)
+        interesting_txns = filter(is_interesting_entry, only_txns)
+        return list(interesting_txns)
 
     def compute_cacheflow_from_transaction(self, txns, interesting_posting_account_filter,
                                            internal_posting_account_filter, inflow_accounts,
@@ -367,20 +364,26 @@ class IRR:
         else:
             value = converted.number
         return value
+    
+    def adjust_twrr_periods(self, twrr_periods, start_date, start_value, end_date, end_value):
+        if start_date not in twrr_periods and start_date != datetime.date.min:
+            twrr_periods[start_date] = [start_value, 0]  # We want the after-cashflow value
+        if end_date not in twrr_periods:
+            twrr_periods[end_date] = [end_value, 0]
 
-    def collect_interesting_txns(self, posting_account_filter):
-        """ Collect transactions that link to any accounts we interest 
-        """
+    def adjust_cashflows(self, cashflows, start_date, start_value, end_date, end_value):
+        # the start_value will include any cashflows that occurred on that date...
+        # this leads to double-counting them, since they'll also appear in our cashflows
+        # list. So we need to deduct them from start_value
+        opening_txns = [amount for (date, amount) in cashflows if date == start_date]
+        start_value -= functools.reduce(operator.add, opening_txns, 0)
+        # if starting balance isn't $0 at starting time period then we need a cashflow
+        if start_value != 0:
+            cashflows.insert(0, (start_date, start_value))
+        # if ending balance isn't $0 at end of time period then we need a cashflow
+        if end_value != 0:
+            cashflows.append((end_date, -end_value))
 
-        def is_interesting_entry(entry):
-            for posting in entry.postings:
-                if posting_account_filter.is_passed(posting):
-                    return True
-            return False
-
-        only_txns = beancount.core.data.filter_txns(self.all_entries)
-        interesting_txns = filter(is_interesting_entry, only_txns)
-        return list(interesting_txns)
 
 
 class ArgsParser:
