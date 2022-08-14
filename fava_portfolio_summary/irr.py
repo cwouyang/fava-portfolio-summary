@@ -166,6 +166,7 @@ class IRR:
 
     def get_inventory_as_of_date(self, date, posting_account_filter, postings=None):
         """Get postings up-to a specified date"""
+
         def iter_interesting_postings():
             """Iterator for 'interesting' postings up-to a specified date"""
             if postings:
@@ -223,17 +224,9 @@ class IRR:
         return amount.number
 
     def calculate(self, patterns, internal_patterns=None, start_date=None, end_date=None,
-                  mwr=True, twr=False,
-                  cashflows=None, inflow_accounts=None, outflow_accounts=None,
-                  debug_twr=False):
+                  mwr=True, twr=False, debug_twr=False):
         """Calculate MWRR or TWRR for a set of accounts"""
         # pylint: disable=too-many-branches too-many-statements too-many-locals too-many-arguments
-        if cashflows is None:
-            cashflows = []
-        if inflow_accounts is None:
-            inflow_accounts = set()
-        if outflow_accounts is None:
-            outflow_accounts = set()
         if not start_date:
             start_date = datetime.date.min
         if not end_date:
@@ -244,13 +237,16 @@ class IRR:
         interesting_txns = self.collect_interesting_txns(interesting_posting_account_filter)
         self.remaining = collections.deque(interesting_txns)
         self.inventory.clear()
-        twrr_periods = {}
 
         # p1 = get_inventory_as_of_date(datetime.date(2000, 3, 31), interesting_txns)
         # p2 = get_inventory_as_of_date(datetime.date(2000, 4, 17), interesting_txns)
         # p1a = get_inventory_as_of_date(datetime.date(2000, 3, 31), None)
         # p2a = get_inventory_as_of_date(datetime.date(2000, 4, 17), None)
 
+        cashflows = []
+        twrr_periods = {}
+        inflow_accounts = set()
+        outflow_accounts = set()
         for txns in interesting_txns:
             txns_date = txns.date
             if not start_date <= txns_date <= end_date:
@@ -304,7 +300,7 @@ class IRR:
             delta = elapsed[i + 1] - elapsed[i]
             self.times[i] += delta
             # print(f"T{i}: delta")
-        return irr, twrr
+        return irr, twrr, cashflows, inflow_accounts, outflow_accounts
 
     def collect_interesting_txns(self, posting_account_filter):
         """ Collect transactions that link to any accounts we interest 
@@ -487,14 +483,9 @@ def main():
     entries, _errors, _options = beancount.loader.load_file(args.bean, logging.info, log_errors=sys.stderr)
     price_map = beancount.core.prices.build_price_map(entries)
 
-    cashflows = []
-    inflow_accounts = set()
-    outflow_accounts = set()
-    irr, twr = IRR(entries, price_map, args.currency).calculate(
-        args.account, internal_patterns=args.internal, start_date=args.date_from, end_date=args.date_to,
-        mwr=True, twr=True,
-        cashflows=cashflows, inflow_accounts=inflow_accounts, outflow_accounts=outflow_accounts,
-        debug_twr=args.debug_twr)
+    irr, twr, cashflows, inflow_accounts, outflow_accounts = IRR(entries, price_map, args.currency) \
+        .calculate(args.account, internal_patterns=args.internal, start_date=args.date_from, end_date=args.date_to,
+                   mwr=True, twr=True, debug_twr=args.debug_twr)
     if irr:
         print(f"IRR: {irr}")
     if twr:

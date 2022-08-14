@@ -389,7 +389,7 @@ class PortfolioSummaryInstance:  # pragma: no cover
         cache_key = (",".join(patterns), ",".join(internal), self.ledger.end_date, calc_mwr, calc_twr)
         if cache_key in self.irr_cache:
             return self.irr_cache[cache_key]
-        mwr, twr = self.irr.calculate(
+        mwr, twr, _, _, _ = self.irr.calculate(
             patterns, internal_patterns=internal,
             start_date=None, end_date=self.ledger.end_date, mwr=calc_mwr, twr=calc_twr)
         if mwr:
