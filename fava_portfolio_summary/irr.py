@@ -71,7 +71,7 @@ def xnpv(rate: float, cashflows: List[Tuple[datetime.datetime, float]]) -> float
     return sum([cf / (1 + rate) ** ((t - t0).days / 365.0) for (t, cf) in chron_order])
 
 
-def xirr(cashflows: List[Tuple[datetime.datetime, float]], guess: float = 0.1) -> float:
+def xirr(cashflows: List[Tuple[datetime.datetime, float]], guess: float = 0.01) -> float:
     """
     Calculate the Internal Rate of Return of a series of cashflows at irregular intervals.
 
@@ -92,11 +92,19 @@ def xirr(cashflows: List[Tuple[datetime.datetime, float]], guess: float = 0.1) -
       function does not fail gracefully in cases where there is no solution, so the scipy.optimize.newton version is
       preferred.
     """
-    try:
-        return secant_method(lambda r: xnpv(r, cashflows), guess)
-    except Exception as _e:
-        logging.error("No solution found for IRR: %s", _e)
-        return 0.0
+    try_count = 5
+    for i in range(1, try_count+1):
+        try:
+            root = secant_method(lambda r: xnpv(r, cashflows), guess)
+            if isinstance(root, float):
+                print(f"root: {root}")
+                return root
+        except Exception as _e:
+            if i == try_count:
+                logging.error("No solution found for IRR: %s", _e)
+                return 0.0
+        guess = guess * 2
+        print(f"Try next {guess}")
 
 
 def xtwrr(periods, debug=False) -> float:
